@@ -2,64 +2,82 @@
 
 [![CI](https://github.com/alexegger224/vol-surface-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/alexegger224/vol-surface-lab/actions/workflows/ci.yml)
 
-Full-stack **research** tool for implied volatility: upload end-of-day option quotes (CSV), validate the schema, run a **versioned, deterministic** smoother in total variance, then inspect the surface in the browser (heatmap and 3D) and export the grid as **Apache Parquet** or JSON.
+Turn a messy CSV of end-of-day option quotes into a **versioned implied-volatility surface** you can inspect in the browser and hand off as **Parquet** or JSON. The backend is explicit about conventions (day count, moneyness, what got dropped on ingest) so the output is explainable—not a black box.
 
-**Not in scope for v1:** broker APIs, live market data, execution, portfolios, or suitability advice.
+**Out of scope for v1:** live feeds, broker APIs, execution, portfolios, or any kind of trading advice.
 
-## Interview signal
-
-| Lens                  | What this repo proves                                                                                                                              |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Quant + API craft** | Versioned **deterministic** IV surface (`pchip_var_lin_time_v1`), explicit ACT/365F and moneyness assumptions—readable numerics, not black-box ML. |
-| **Full stack**        | FastAPI + Pydantic/OpenAPI, pandas/SciPy pipeline, Next.js 15 + Plotly visualization, Parquet export.                                              |
-| **Production habits** | `uv.lock`, Ruff, pytest with synthetic ground-truth surfaces, Docker Compose, **GitHub Actions** (badge above).                                    |
-| **Communication**     | Research disclaimer, methodology section, and documented **drop counts** so stakeholders know what changed in the grid.                            |
+**Deeper quant notes** (PCHIP vs SVI, production caveats): [`docs/README_QUANT.md`](docs/README_QUANT.md).
 
 ---
 
-## Why this repo exists
+## Try it
 
-Demonstrates a small production-shaped slice of work hiring teams care about: typed APIs (Pydantic + OpenAPI), numeric pipelines (pandas / SciPy), reproducible dependencies (`uv.lock`), automated quality gates (Ruff, pytest, Next build + TypeScript), containerized local dev, and clear documentation of **model assumptions** instead of black-box “ML magic.”
+```bash
+docker compose up --build
+```
+
+Open the frontend URL from the logs, upload a small CSV, hit **compute**, and you get a heatmap plus a 3D view and the assumptions payload the API returns.
+
+---
+
+## If you are skimming this repo
+
+- **Numerics:** Total-variance surface built with SciPy `PchipInterpolator` on \(w = \sigma^2 T\) vs log-moneyness, with a **fixed method id** (`pchip_var_lin_time_v1`) so runs are comparable.
+- **API:** FastAPI + Pydantic, OpenAPI at `/docs`, multipart CSV ingest, JSON compute response with chart metadata and **row drop counts**.
+- **Frontend:** Next.js 15 (App Router), TypeScript, Plotly for heatmap + 3D; Parquet download from the API.
+- **Engineering:** `uv` + lockfile, Ruff, pytest (synthetic surfaces + API round-trip), Docker Compose, GitHub Actions on backend and frontend.
+
+That combination is what I wanted to show: something that looks like a small internal research tool, not a tutorial toy.
+
+---
 
 ## Stack
 
-| Layer   | Choices                                                                      |
-| ------- | ---------------------------------------------------------------------------- |
-| API     | Python 3.12+, FastAPI, pandas, SciPy (`PchipInterpolator`), PyArrow          |
-| UI      | Next.js 15 (App Router), TypeScript, Plotly (`react-plotly.js`, client-only) |
-| Tooling | uv, Ruff, pytest; npm; Docker Compose                                        |
-| CI      | GitHub Actions (see note below)                                              |
+| Layer   | Details                                                                                                                            |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| API     | Python 3.12+, FastAPI, pandas, SciPy, PyArrow                                                                                      |
+| UI      | Next.js 15, React 19, TypeScript, Plotly (client-only)                                                                             |
+| Tooling | uv, Ruff, pytest; Node 22, npm; Docker Compose                                                                                     |
+| CI      | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — Ruff + pytest (frozen deps), `npm ci` + production build + `tsc --noEmit` |
 
-## Features (v1)
+---
 
-- **CSV ingest** with column checks, UTF-8 (optional BOM), configurable max upload size (`MAX_UPLOAD_BYTES`).
-- **Quotes model:** `underlying`, `expiry`, `strike`, `iv`, optional `open_interest`, `volume`.
-- **Surface engine** `pchip_var_lin_time_v1`: PCHIP on \(w=\sigma^2 T\) vs \(k=\log(K/F)\) per expiry; linear blend of \(w\) in time between expiries; **null** IV outside strike or expiry hulls (no silent extrapolation).
-- **API:** multipart upload, JSON compute response with `chart` + `assumptions` (method version, grid bounds, **ingest row drop counts**), Parquet + JSON grid downloads.
-- **UI:** upload, parameters, Plotly heatmap + 3D surface, Parquet download, persistent **research disclaimer** in the footer.
+## What v1 actually does
 
-## Methodology (v1)
+- CSV upload with schema checks, UTF-8 (BOM-tolerant), configurable `MAX_UPLOAD_BYTES`.
+- Quotes: `underlying`, `expiry`, `strike`, `iv`, optional `open_interest`, `volume`.
+- **Surface engine** `pchip_var_lin_time_v1`: PCHIP in \(w\) vs \(k = \log(K/F)\) per expiry; linear blend of \(w\) in time between expiries; **null** IV outside the strike/expiry hull (no silent extrapolation).
+- **UI:** Upload flow, parameters, Plotly heatmap and 3D surface, Parquet download, and a **research disclaimer** pinned in the footer.
+- **Responses:** JSON with `chart` + `assumptions` (version string, grid bounds, ingest drops); grid as Parquet or JSON.
 
-Version string: `pchip_var_lin_time_v1` (returned in API JSON and Parquet columns).
+---
+
+## Methodology (short)
+
+Version string: `pchip_var_lin_time_v1` (surfaced in API JSON and Parquet metadata).
 
 - **Year fraction:** ACT/365F from `as_of_date` to each `expiry`.
-- **Log-moneyness:** \(k = \log(K/F)\). **\(F\)** is the user-supplied **spot** (same for all rows in v1)—documented as a forward _proxy_, not an implied forward curve.
-- **Per expiry:** `scipy.interpolate.PchipInterpolator` on \((k, w)\) with `extrapolate=False`.
+- **Log-moneyness:** \(k = \log(K/F)\). **F** is the user-supplied **spot** for the whole dataset in v1—documented as a forward _proxy_, not an implied forward curve.
+- **Per expiry:** `PchipInterpolator` on \((k, w)\) with `extrapolate=False`.
 - **Across expiries:** linear interpolation of \(w\) in \(T\) between bracketing expiries at fixed \(k\).
 - **Single expiry:** time grid collapses to that expiry’s \(T\); `n_t` is effectively ignored.
 
-Design goal: **reproducibility and explicit assumptions** over opaque curve fitting.
+Design bias: **reproducibility and stated assumptions** over opaque curve fitting.
+
+---
 
 ## Repository layout
 
 ```
 vol-surface-lab/
-├── backend/           # FastAPI app (src layout: vol_surface_lab)
-├── frontend/          # Next.js UI
+├── backend/           # FastAPI (package: vol_surface_lab)
+├── frontend/          # Next.js app
 ├── docker-compose.yml
 ├── .env.example
-└── .github/workflows/ # CI (see note)
+└── .github/workflows/
 ```
+
+---
 
 ## CSV schema
 
@@ -69,8 +87,6 @@ vol-surface-lab/
 - `iv` is a **decimal** (e.g. `0.25` for 25% vol).
 - Dates: `YYYY-MM-DD` recommended.
 
-Example:
-
 ```csv
 underlying,expiry,strike,iv,open_interest,volume
 DEMO,2026-09-18,95,0.28,,
@@ -78,7 +94,9 @@ DEMO,2026-09-18,100,0.25,1200,500
 DEMO,2026-09-18,105,0.27,,
 ```
 
-## Quick start
+---
+
+## Local development
 
 ### Backend
 
@@ -108,40 +126,50 @@ From the repo root:
 docker compose up --build
 ```
 
-The browser talks to whatever URL was baked into the web image as `NEXT_PUBLIC_API_URL` at **build** time (see `docker-compose.yml`). Change the build arg if the API is not on the host loopback.
+The browser uses `NEXT_PUBLIC_API_URL` **baked in at image build time** (see `docker-compose.yml`). Adjust the build arg if the API is not on loopback.
+
+---
 
 ## HTTP API
 
 | Method | Path                                 | Purpose                                                                                     |
 | ------ | ------------------------------------ | ------------------------------------------------------------------------------------------- |
-| `POST` | `/api/v1/datasets`                   | Multipart CSV → `dataset_id`, row counts, `rows_dropped`                                    |
+| `POST` | `/api/v1/datasets`                   | Multipart CSV → `dataset_id`, counts, `rows_dropped`                                        |
 | `POST` | `/api/v1/surfaces`                   | JSON `{ dataset_id, as_of_date, spot, n_k, n_t, … }` → `surface_id`, `chart`, `assumptions` |
 | `GET`  | `/api/v1/surfaces/{id}/grid.parquet` | Download grid                                                                               |
 | `GET`  | `/api/v1/surfaces/{id}/grid.json`    | Same payload as compute                                                                     |
 | `GET`  | `/health`                            | Liveness                                                                                    |
 
-**v1 constraint:** one underlying per dataset at compute time (split multi-ticker CSVs before upload).
+**v1:** one underlying per dataset at compute time—split multi-ticker CSVs before upload.
 
-**Persistence:** datasets and surfaces live **in process memory**; restarting the API clears them.
+**Persistence:** datasets and surfaces are **in-memory**; restarting the API clears them.
+
+---
 
 ## Tests
 
-Synthetic tests build a known linear \(w(k)\) surface, run it through the pipeline, and assert interior IV matches within tolerance; the API test covers upload → compute → Parquet round-trip.
+Synthetic tests drive a known linear \(w(k)\) surface through the pipeline and assert interior IV within tolerance; the API test covers upload → compute → Parquet round-trip.
 
 ```bash
 cd backend
 uv run pytest
 ```
 
+---
+
 ## Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs backend (Ruff + pytest with frozen lockfile) and frontend (`npm ci`, production build, `tsc --noEmit`).
+Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-> **CI layout:** GitHub Actions only runs workflows from the **repository root**. If this code currently lives inside a larger mono-repo, either publish **`vol-surface-lab` as its own Git repository** (recommended) or add a root-level workflow with `paths:` / `working-directory` pointing at this subtree.
+**Mono-repo note:** GitHub only runs workflows from the **repository root**. If this tree lives inside a larger repo, either publish **vol-surface-lab** as its own remote or add a root workflow with `paths:` / `working-directory` aimed at this folder.
+
+---
 
 ## Configuration
 
 See [`.env.example`](.env.example) for `CORS_ORIGINS`, `MAX_UPLOAD_BYTES`, and `NEXT_PUBLIC_API_URL`.
+
+---
 
 ## Disclaimer
 
